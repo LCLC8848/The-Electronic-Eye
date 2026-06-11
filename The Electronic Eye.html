@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高度仿真数字电子眼</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #000;
+            margin: 0;
+            overflow: hidden;
+            color: #39FF14;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            pointer-events: none;
+        }
+        .controls {
+            pointer-events: auto;
+            background: rgba(0, 15, 0, 0.9);
+            padding: 15px;
+            border: 1px solid #39FF14;
+            border-radius: 2px;
+            box-shadow: 0 0 20px rgba(57, 255, 20, 0.2);
+        }
+        button {
+            background: #39FF14;
+            color: #000;
+            padding: 8px 16px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 10px;
+        }
+        button:hover {
+            background: #fff;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #ff0055;
+            margin-right: 8px;
+        }
+        .status-connected {
+            background: #39FF14;
+            box-shadow: 0 0 8px #39FF14;
+        }
+        input[type=range] {
+            accent-color: #39FF14;
+            height: 4px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="controls">
+        <h2 class="text-xs font-bold mb-2 tracking-tighter opacity-70">BIOMETRIC_SCANNER_V6</h2>
+        <div class="mb-4 text-[10px]">
+            <span id="status-dot" class="status-dot"></span>
+            SYNC: <span id="status-text">WAITING_FOR_SERIAL</span>
+        </div>
+        <button id="connect-btn">CONNECT SENSOR</button>
+        <div class="mt-6 text-[10px] opacity-60">
+            RANGE_EMULATOR:
+            <input type="range" id="dist-slider" min="5" max="120" value="50" class="w-full mt-2">
+            <div class="flex justify-between mt-1">
+                <span>NEAR</span>
+                <span id="dist-val">50CM</span>
+                <span>FAR</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<canvas id="eyeCanvas"></canvas>
+
+<script>
+    const config = {
+        primaryColor: '#39FF14', 
+        bgColor: '#000000',
+        minGridSize: 2.0,        
+        maxGridSize: 28,         
+        minDist: 10,             
+        maxDist: 100,            
+    };
+
+    const canvas = document.getElementById('eyeCanvas');
+    const ctx = canvas.getContext('2d');
+    const connectBtn = document.getElementById('connect-btn');
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const distSlider = document.getElementById('dist-slider');
+    const distValDisplay = document.getElementById('dist-val');
+
+    let width, height;
+    let currentDistance = 50;
+    let targetDistance = 50;
+    let isBlinking = false;
+    let blinkProgress = 0; 
+    let lastBlinkTime = 0;
+    
+    let cachedPixelData = null;
+    let imgW = 800;
+    let imgH = 600;
+
+    function initCanvas() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+
+    /**
+     * 生成底层结构，调整内部组件比例
+     */
+    function generateBiometricEye() {
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = 800;
+        offCanvas.height = 600;
+        const octx = offCanvas.getContext('2d');
+
+        // 1. 全黑背景
+        octx.fillStyle = "black";
+        octx.fillRect(0, 0, 800, 600);
+
+        // 定义眼睑路径
+        const drawEyeOutline = () => {
+            octx.beginPath();
+            octx.moveTo(150, 300);
+            octx.quadraticCurveTo(400, 20, 650, 300); // 上眼睑
+            octx.quadraticCurveTo(400, 580, 150, 300); // 下眼睑
+            octx.closePath();
+        };
+
+        // 2. 开启裁剪：以下绘制的内容只会在眼睑内部显示
+        octx.save();
+        drawEyeOutline();
+        octx.clip();
+
+        // 绘制虹膜（眼珠）- 缩小至 130
+        octx.fillStyle = "rgba(255, 255, 255, 0.9)"; 
+        octx.beginPath();
+        octx.arc(400, 300, 128, 0, Math.PI * 2);
+        octx.fill();
+
+        // 绘制瞳孔（中心镂空）- 缩小至 50
+        octx.fillStyle = "black";
+        octx.beginPath();
+        octx.arc(400, 300, 52, 0, Math.PI * 2);
+        octx.fill();
+
+        // 绘制高光 - 尺寸缩小并微调位置
+        octx.fillStyle = "white";
+        octx.beginPath();
+        octx.arc(360, 260, 22, 0, Math.PI * 2); // 主高光
+        octx.fill();
+        octx.beginPath();
+        octx.arc(430, 330, 8, 0, Math.PI * 2);  // 次高光
+        octx.fill();
+
+        octx.restore(); // 结束裁剪
+
+        // 3. 绘制加粗的眼睑线条
+        octx.strokeStyle = "white"; 
+        octx.lineWidth = 18; 
+        drawEyeOutline();
+        octx.stroke();
+
+        imgW = offCanvas.width;
+        imgH = offCanvas.height;
+        cachedPixelData = octx.getImageData(0, 0, imgW, imgH).data;
+    }
+
+    function render() {
+        ctx.fillStyle = config.bgColor;
+        ctx.fillRect(0, 0, width, height);
+
+        if (!cachedPixelData) return;
+
+        currentDistance += (targetDistance - currentDistance) * 0.08;
+
+        const norm = Math.max(0, Math.min(1, (currentDistance - config.minDist) / (config.maxDist - config.minDist)));
+        const gridSize = config.minGridSize + (norm * (config.maxGridSize - config.minGridSize));
+        const scale = (1.0 - (norm * 0.6)) * (height / 650); 
+
+        const drawW = imgW * scale;
+        const drawH = imgH * scale;
+        const startX = (width - drawW) / 2;
+        const startY = (height - drawH) / 2;
+
+        updateBlink();
+
+        ctx.shadowBlur = isBlinking ? 0 : 12 - (norm * 10);
+        ctx.shadowColor = config.primaryColor;
+
+        for (let y = 0; y < imgH; y += gridSize) {
+            const relY = y / imgH;
+            if (relY < blinkProgress * 0.5 || relY > 1 - (blinkProgress * 0.5)) continue;
+
+            for (let x = 0; x < imgW; x += gridSize) {
+                const i = (Math.floor(y) * imgW + Math.floor(x)) * 4;
+                const r = cachedPixelData[i];
+                const alpha = cachedPixelData[i + 3];
+
+                if (r > 20 && alpha > 0) { 
+                    const brightness = r / 255;
+                    const posX = startX + (x * scale);
+                    const posY = startY + (y * scale);
+                    
+                    const pW = Math.max(1, gridSize * scale * 0.45 * (0.6 + brightness * 0.4));
+                    const pH = Math.max(1, gridSize * scale * 0.95 * (0.6 + brightness * 0.4)); 
+                    
+                    ctx.globalAlpha = 0.2 + (brightness * 0.8);
+                    ctx.fillStyle = config.primaryColor;
+                    
+                    const jitter = (1 - brightness) * gridSize * 0.08;
+                    ctx.fillRect(posX + (Math.random()-0.5)*jitter, posY, pW, pH);
+                }
+            }
+        }
+        ctx.globalAlpha = 1.0;
+
+        requestAnimationFrame(render);
+    }
+
+    function updateBlink() {
+        const now = Date.now();
+        if (!isBlinking && now - lastBlinkTime > 4000 + Math.random() * 5000) {
+            isBlinking = true;
+        }
+
+        if (isBlinking) {
+            blinkProgress += 0.25;
+            if (blinkProgress >= 1) {
+                blinkProgress = 1;
+                isBlinking = false;
+                lastBlinkTime = now;
+            }
+        } else {
+            blinkProgress *= 0.6; 
+            if (blinkProgress < 0.01) blinkProgress = 0;
+        }
+    }
+
+    async function connectSerial() {
+        try {
+            const port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 9600 });
+            statusDot.classList.add('status-connected');
+            statusText.innerText = "LINK_ESTABLISHED";
+            connectBtn.style.display = "none";
+            
+            const decoder = new TextDecoderStream();
+            port.readable.pipeTo(decoder.writable);
+            const reader = decoder.readable.getReader();
+            let buf = "";
+            while(true) {
+                const {value, done} = await reader.read();
+                if(done) break;
+                buf += value;
+                let parts = buf.split('\n');
+                if(parts.length > 1) {
+                    let d = parseInt(parts[parts.length-2].trim());
+                    if(!isNaN(d)) {
+                        targetDistance = d;
+                        distValDisplay.innerText = d + "CM";
+                        distSlider.value = d;
+                    }
+                    buf = parts[parts.length-1];
+                }
+            }
+        } catch(e) { console.error(e); }
+    }
+
+    window.addEventListener('resize', initCanvas);
+    connectBtn.addEventListener('click', connectSerial);
+    distSlider.addEventListener('input', (e) => {
+        targetDistance = parseInt(e.target.value);
+        distValDisplay.innerText = targetDistance + "CM";
+    });
+
+    initCanvas();
+    generateBiometricEye();
+    render();
+
+</script>
+</body>
+</html>
